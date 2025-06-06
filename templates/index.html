@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>EchoSplit</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="container">
+    <h1>🎧 EchoSplit</h1>
+
+    <form method="POST" enctype="multipart/form-data" onsubmit="showLoading()">
+      <input type="file" name="file" required>
+      <button type="submit">Upload & Separate</button>
+    </form>
+
+    <div id="loading" class="hidden">
+      <p>⏳ Separating your track... Please wait.</p>
+    </div>
+
+    {% if stems == 'processing' %}
+      <p class="status">Processing {{ song }}... Check back soon!</p>
+    {% elif stems %}
+      <h2>🎶 Separated Stems:</h2>
+      <ul>
+        {% for stem in ["vocals", "drums", "bass", "other"] %}
+          <li><a href="https://{{ bucket_name }}.s3.amazonaws.com/{{ song }}/{{ stem }}.mp3">{{ stem.title() }}</a></li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+
+    <h3>💬 Feedback</h3>
+    <form action="/feedback" method="POST">
+      <textarea name="message" placeholder="Let us know what you think..." required></textarea>
+      <button type="submit">Send Feedback</button>
+    </form>
+  </div>
+
+  <script>
+    function showLoading() {
+      document.getElementById("loading").classList.remove("hidden");
+    }
+  </script>
+</body>
+</html>
