@@ -47,7 +47,6 @@
 
     uploadForm.addEventListener('submit', e => {
       e.preventDefault();
-      // Transition to processing
       stageUpload.classList.add('hidden');
       stageProcessing.classList.remove('hidden');
 
@@ -62,9 +61,11 @@
             try { errObj = await res.json(); } catch {}
             throw new Error(errObj.error || res.statusText);
           }
-          return res.text();
+          // parse the returned JSON { filename: "safe_name.mp3" }
+          const data = await res.json();
+          return data.filename;
         })
-        .then(() => pollResults(file.name))
+        .then(storedFilename => pollResults(storedFilename))
         .catch(err => {
           alert("Error: " + err.message);
           stageProcessing.classList.add('hidden');
@@ -73,7 +74,6 @@
     });
 
     function pollResults(filename) {
-      const base = filename.replace(/\.[^/.]+$/, '');
       let attempts = 0, maxAttempts = 30;
       const interval = setInterval(() => {
         attempts++;
