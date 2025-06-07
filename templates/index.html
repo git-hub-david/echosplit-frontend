@@ -47,6 +47,7 @@
 
     uploadForm.addEventListener('submit', e => {
       e.preventDefault();
+      // Move to processing stage
       stageUpload.classList.add('hidden');
       stageProcessing.classList.remove('hidden');
 
@@ -55,13 +56,18 @@
       formData.append('file', file);
 
       fetch('/', { method: 'POST', body: formData })
-        .then(res => {
-          if (!res.ok) throw new Error('Upload failed');
+        .then(async res => {
+          if (!res.ok) {
+            // Try to parse JSON error
+            let errObj = {};
+            try { errObj = await res.json(); } catch {}
+            throw new Error(errObj.error || res.statusText);
+          }
           return res.text();
         })
         .then(() => pollResults(file.name))
         .catch(err => {
-          alert(err.message);
+          alert("Error: " + err.message);
           stageProcessing.classList.add('hidden');
           stageUpload.classList.remove('hidden');
         });
@@ -73,7 +79,6 @@
       const maxAttempts = 30;
       const interval = setInterval(() => {
         attempts++;
-        // Poll your backend status endpoint
         fetch(`/status?filename=${encodeURIComponent(filename)}`)
           .then(res => res.json())
           .then(json => {
@@ -101,10 +106,10 @@
     function showResults(base) {
       ['vocals','drums','bass','other'].forEach(stem => {
         const li = document.createElement('li');
-        const a = document.createElement('a');
-        a.href = `https://${{bucket_name}}.s3.amazonaws.com/${base}/${stem}.mp3`;
+        const a  = document.createElement('a');
+        a.href      = `https://${{bucket_name}}.s3.amazonaws.com/${base}/${stem}.mp3`;
         a.textContent = stem.charAt(0).toUpperCase() + stem.slice(1);
-        a.target = '_blank';
+        a.target    = '_blank';
         li.appendChild(a);
         stemList.appendChild(li);
       });
