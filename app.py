@@ -1,9 +1,10 @@
 import os
-import requests
+import threading
 from flask import Flask, request, render_template, jsonify
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 import boto3
+import requests
 
 # Load local .env when testing locally
 load_dotenv()
@@ -21,8 +22,22 @@ s3 = boto3.client(
     region_name=os.getenv("AWS_REGION")
 )
 
-# RunPod webhook (set this in Render ENV)
+# Webhook base URL (no trailing slash)
 RUNPOD_WEBHOOK = os.getenv("RUNPOD_WEBHOOK").rstrip("/")
+
+def trigger_runpod(filename: str):
+    """
+    Fire-and-forget POST to RunPod webhook.
+    Short timeout so this thread never hangs.
+    """
+    try:
+        requests.post(
+            RUNPOD_WEBHOOK,
+            json={"filename": filename},
+            timeout=2  # short so thread finishes quickly
+        )
+    except Exception:
+        pass  # ignore all errors
 
 @app.route("/", methods=["GET", "POST"])
 def upload_file():
@@ -38,34 +53,24 @@ def upload_file():
         # 1) Upload to S3
         try:
             s3.upload_file(local_path, bucket_name, filename)
-            print(f"✅ Uploaded {filename} to S3://{bucket_name}/{filename}")
+            app.logger.info(f"Uploaded {filename} to s3://{bucket_name}/{filename}")
         except Exception as e:
             return jsonify({"error": f"S3 upload failed: {e}"}), 500
 
-        # 2) Trigger RunPod processing
-        try:
-            resp = requests.post(
-                RUNPOD_WEBHOOK,
-                json={"filename": filename},
-                timeout=10
-            )
-            print(f"📨 RunPod webhook response: {resp.status_code} {resp.text}")
-            if resp.status_code != 200:
-                raise Exception(resp.text)
-        except Exception as e:
-            return jsonify({"error": f"Failed to trigger RunPod: {e}"}), 500
+        # 2) Trigger RunPod webhook in background
+        threading.Thread(target=trigger_runpod, args=(filename,), daemon=True).start()
 
-        # 3) Return 200 so the spinner continues while RunPod processes
+        # 3) Return immediately so frontend enters processing stage
         return ("", 200)
 
-    # GET → render the upload page
+    # GET → render upload page
     return render_template("index.html", bucket_name=bucket_name)
 
 @app.route("/status")
 def status_proxy():
     """
-    Proxy status checks to the RunPod backend's /status endpoint.
-    Frontend JS polls this endpoint to detect completion.
+    Proxy status check to the RunPod backend's /status endpoint.
+    Frontend JS polls this to detect when stems are ready.
     """
     filename = request.args.get("filename", "")
     if not filename:
@@ -73,10 +78,15 @@ def status_proxy():
 
     backend_status_url = f"{RUNPOD_WEBHOOK}/status"
     try:
-        resp = requests.get(backend_status_url, params={"filename": filename}, timeout=5)
+        resp = requests.get(
+            backend_status_url,
+            params={"filename": filename},
+            timeout=5
+        )
+        # Return the backend JSON (either {"done":false} or {"done":true,"urls":{…}})
         return (resp.text, resp.status_code, {"Content-Type": "application/json"})
     except Exception:
-        # On error, tell the frontend it's not done yet
+        # On failure, signal not done so polling continues
         return jsonify({"done": False}), 500
 
 @app.route("/feedback", methods=["POST"])
