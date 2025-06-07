@@ -3,15 +3,15 @@ from flask import Flask, request, render_template, jsonify
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 import boto3
+import requests
 
-# Load local .env when testing locally
 load_dotenv()
 
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = "uploads"
 os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
 
-# AWS S3 setup
+# AWS S3
 bucket_name = os.getenv("S3_BUCKET")
 s3 = boto3.client(
     "s3",
@@ -20,10 +20,12 @@ s3 = boto3.client(
     region_name=os.getenv("AWS_REGION")
 )
 
+# Your RunPod webhook URL (ensure this is set in Render ENV as well)
+RUNPOD_WEBHOOK = os.getenv("RUNPOD_WEBHOOK")
+
 @app.route("/", methods=["GET", "POST"])
 def upload_file():
     if request.method == "POST":
-        # JS sends FormData with 'file'
         file = request.files.get("file")
         if not file:
             return jsonify({"error": "No file provided"}), 400
@@ -33,15 +35,25 @@ def upload_file():
         file.save(local_path)
 
         try:
-            # Upload to S3
+            # 1) Upload to S3
             s3.upload_file(local_path, bucket_name, filename)
             print(f"✅ Uploaded {filename} to S3://{bucket_name}/{filename}")
-            return ("", 200)
         except Exception as e:
-            print(f"❌ S3 upload error: {e}")
-            return jsonify({"error": str(e)}), 500
+            return jsonify({"error": f"S3 upload failed: {e}"}), 500
 
-    # GET → serve the page, giving it the bucket name for JS
+        try:
+            # 2) Trigger RunPod processing
+            resp = requests.post(RUNPOD_WEBHOOK, json={"filename": filename})
+            print(f"📨 RunPod webhook response: {resp.status_code} {resp.text}")
+            if resp.status_code != 200:
+                raise Exception(resp.text)
+        except Exception as e:
+            return jsonify({"error": f"Failed to trigger RunPod: {e}"}), 500
+
+        # 3) Return 200 so the spinner stays up while RunPod runs
+        return ("", 200)
+
+    # GET → render frontend
     return render_template("index.html", bucket_name=bucket_name)
 
 @app.route("/feedback", methods=["POST"])
@@ -53,6 +65,5 @@ def feedback():
     return ("", 200)
 
 if __name__ == "__main__":
-    # Use the PORT env var on Render, default to 5000 locally
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
