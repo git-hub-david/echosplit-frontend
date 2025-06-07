@@ -1,5 +1,5 @@
 Flask
-Flask-Cor
+Flask-Cors
 Flask-Session
 boto3
 python-dotenv
