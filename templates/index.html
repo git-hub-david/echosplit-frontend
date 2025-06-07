@@ -39,15 +39,16 @@
   </div>
 
   <script>
-    const uploadForm = document.getElementById('upload-form');
-    const stageUpload = document.getElementById('stage-upload');
+    const uploadForm      = document.getElementById('upload-form');
+    const stageUpload     = document.getElementById('stage-upload');
     const stageProcessing = document.getElementById('stage-processing');
-    const stageResults = document.getElementById('stage-results');
-    const stemList = document.getElementById('stem-list');
+    const stageResults    = document.getElementById('stage-results');
+    const stemList        = document.getElementById('stem-list');
+    const bucket          = "{{ bucket_name }}";
 
+    // Handle file upload and kick off processing
     uploadForm.addEventListener('submit', e => {
       e.preventDefault();
-      // Move to processing stage
       stageUpload.classList.add('hidden');
       stageProcessing.classList.remove('hidden');
 
@@ -58,7 +59,6 @@
       fetch('/', { method: 'POST', body: formData })
         .then(async res => {
           if (!res.ok) {
-            // Try to parse JSON error
             let errObj = {};
             try { errObj = await res.json(); } catch {}
             throw new Error(errObj.error || res.statusText);
@@ -73,6 +73,7 @@
         });
     });
 
+    // Poll the frontend /status proxy until done
     function pollResults(filename) {
       const base = filename.replace(/\.[^/.]+$/, '');
       let attempts = 0;
@@ -103,13 +104,14 @@
       }, 4000);
     }
 
+    // Render download links and prompt download
     function showResults(base) {
       ['vocals','drums','bass','other'].forEach(stem => {
         const li = document.createElement('li');
         const a  = document.createElement('a');
-        a.href      = `https://${{bucket_name}}.s3.amazonaws.com/${base}/${stem}.mp3`;
+        a.href        = `https://${bucket}.s3.amazonaws.com/${base}/${stem}.mp3`;
         a.textContent = stem.charAt(0).toUpperCase() + stem.slice(1);
-        a.target    = '_blank';
+        a.download    = `${stem}.mp3`;
         li.appendChild(a);
         stemList.appendChild(li);
       });
