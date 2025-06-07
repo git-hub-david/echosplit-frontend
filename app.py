@@ -69,15 +69,15 @@ if __name__ == "__main__":
     app.run(host="0.0.0.0", port=port)
 
 @app.route("/status")
-def status():
-    # Forward the request to your RunPod backend
+def status_proxy():
     filename = request.args.get("filename", "")
     if not filename:
-        return jsonify({"error":"No filename"}), 400
+        return jsonify({"error": "No filename provided"}), 400
 
+    # Forward to your RunPod backend
     backend_url = os.getenv("RUNPOD_WEBHOOK") + "/status"
     try:
         resp = requests.get(backend_url, params={"filename": filename}, timeout=5)
         return (resp.text, resp.status_code, {"Content-Type": "application/json"})
-    except Exception as e:
+    except Exception:
         return jsonify({"done": False}), 500
