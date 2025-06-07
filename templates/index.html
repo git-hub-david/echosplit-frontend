@@ -44,11 +44,10 @@
     const stageProcessing = document.getElementById('stage-processing');
     const stageResults    = document.getElementById('stage-results');
     const stemList        = document.getElementById('stem-list');
-    const bucket          = "{{ bucket_name }}";
 
-    // Handle file upload and kick off processing
     uploadForm.addEventListener('submit', e => {
       e.preventDefault();
+      // Transition to processing
       stageUpload.classList.add('hidden');
       stageProcessing.classList.remove('hidden');
 
@@ -73,11 +72,9 @@
         });
     });
 
-    // Poll the frontend /status proxy until done
     function pollResults(filename) {
       const base = filename.replace(/\.[^/.]+$/, '');
-      let attempts = 0;
-      const maxAttempts = 30;
+      let attempts = 0, maxAttempts = 30;
       const interval = setInterval(() => {
         attempts++;
         fetch(`/status?filename=${encodeURIComponent(filename)}`)
@@ -85,7 +82,7 @@
           .then(json => {
             if (json.done) {
               clearInterval(interval);
-              showResults(base);
+              showResultsWithUrls(json.urls);
             } else if (attempts >= maxAttempts) {
               clearInterval(interval);
               alert('Still processing—please refresh in a moment.');
@@ -104,17 +101,17 @@
       }, 4000);
     }
 
-    // Render download links and prompt download
-    function showResults(base) {
-      ['vocals','drums','bass','other'].forEach(stem => {
+    function showResultsWithUrls(urls) {
+      stemList.innerHTML = '';
+      for (const [stem, url] of Object.entries(urls)) {
         const li = document.createElement('li');
         const a  = document.createElement('a');
-        a.href        = `https://${bucket}.s3.amazonaws.com/${base}/${stem}.mp3`;
+        a.href        = url;
         a.textContent = stem.charAt(0).toUpperCase() + stem.slice(1);
         a.download    = `${stem}.mp3`;
         li.appendChild(a);
         stemList.appendChild(li);
-      });
+      }
       stageProcessing.classList.add('hidden');
       stageResults.classList.remove('hidden');
     }
