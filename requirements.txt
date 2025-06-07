@@ -1,4 +1,6 @@
 Flask
+Flask-Cor
+Flask-Session
 boto3
 python-dotenv
 gunicorn

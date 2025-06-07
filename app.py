@@ -1,81 +1,96 @@
 import os
-import threading
-from flask import Flask, request, render_template, jsonify
+import json
+from flask import Flask, request, jsonify, render_template
 from werkzeug.utils import secure_filename
-from dotenv import load_dotenv
-import boto3
-import requests
+from flask_cors import CORS
 
-load_dotenv()
 app = Flask(__name__)
-app.config["UPLOAD_FOLDER"] = "uploads"
-os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
+CORS(app)
 
-# AWS S3 setup
-bucket_name = os.getenv("S3_BUCKET")
-s3 = boto3.client(
-    "s3",
-    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-    region_name=os.getenv("AWS_REGION")
-)
+# Configuration
+UPLOAD_FOLDER = 'uploads'
+RESULTS_FOLDER = 'separated'
+KEY_FILE = 'keys.json'
+BUCKET_NAME = 'echosplit-uploads'
 
-# RunPod webhook (no trailing slash)
-RUNPOD_WEBHOOK = os.getenv("RUNPOD_WEBHOOK").rstrip("/")
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(RESULTS_FOLDER, exist_ok=True)
 
-def trigger_runpod(filename: str):
-    try:
-        requests.post(RUNPOD_WEBHOOK, json={"filename": filename}, timeout=2)
-    except Exception:
-        pass
+# IP session tracking
+user_sessions = {}
 
-@app.route("/", methods=["GET", "POST"])
+# Load reusable keys from keys.json
+def load_keys():
+    if os.path.exists(KEY_FILE):
+        with open(KEY_FILE) as f:
+            return json.load(f)
+    return []
+
+# Homepage
+@app.route('/')
+def index():
+    return render_template('index.html', bucket_name=BUCKET_NAME)
+
+# Upload route
+@app.route('/', methods=['POST'])
 def upload_file():
-    if request.method == "POST":
-        file = request.files.get("file")
-        if not file:
-            return jsonify({"error": "No file provided"}), 400
+    ip = request.remote_addr
+    user = user_sessions.get(ip, {'count': 0, 'key': False})
 
-        # save & sanitize filename
-        filename = secure_filename(file.filename)
-        local_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-        file.save(local_path)
+    if not user['key'] and user['count'] >= 2:
+        return jsonify({'blocked': True}), 200
 
-        # upload to S3
-        try:
-            s3.upload_file(local_path, bucket_name, filename)
-        except Exception as e:
-            return jsonify({"error": f"S3 upload failed: {e}"}), 500
+    if 'file' not in request.files:
+        return 'No file part', 400
 
-        # trigger RunPod in background
-        threading.Thread(target=trigger_runpod, args=(filename,), daemon=True).start()
+    file = request.files['file']
+    if file.filename == '':
+        return 'No selected file', 400
 
-        # return the safe filename for polling
-        return jsonify({"filename": filename}), 200
+    filename = secure_filename(file.filename)
+    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    file.save(file_path)
 
-    return render_template("index.html", bucket_name=bucket_name)
+    # Simulate RunPod trigger (your real webhook call goes here)
+    print(f"[INFO] Received upload: {filename} from {ip}")
 
-@app.route("/status")
-def status_proxy():
-    filename = request.args.get("filename", "")
+    user['count'] += 1
+    user_sessions[ip] = user
+
+    return jsonify({'blocked': False}), 200
+
+# Status check
+@app.route('/status')
+def check_status():
+    filename = request.args.get('filename')
     if not filename:
-        return jsonify({"error": "No filename provided"}), 400
+        return jsonify({'error': 'Filename required'}), 400
 
-    try:
-        resp = requests.get(f"{RUNPOD_WEBHOOK}/status",
-                            params={"filename": filename}, timeout=5)
-        return (resp.text, resp.status_code, {"Content-Type": "application/json"})
-    except Exception:
-        return jsonify({"done": False}), 500
+    base = os.path.splitext(filename)[0]
+    s3_base = f"https://{BUCKET_NAME}.s3.amazonaws.com/{base}"
+    stems = ['vocals', 'drums', 'bass', 'other']
 
-@app.route("/feedback", methods=["POST"])
-def feedback():
-    msg = request.form.get("message", "").strip()
-    if msg:
-        with open("feedback.txt", "a", encoding="utf-8") as f:
-            f.write(msg + "\n---\n")
-    return ("", 200)
+    urls = {}
+    for stem in stems:
+        urls[stem] = f"{s3_base}/{stem}.mp3"
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    # You could add actual file checks or ping S3 if needed
+    return jsonify({'done': True, 'urls': urls})
+
+# Key activation
+@app.route('/use_key', methods=['POST'])
+def use_key():
+    data = request.get_json()
+    key = data.get('key')
+    ip = request.remote_addr
+
+    valid_keys = load_keys()
+    if key in valid_keys:
+        user_sessions[ip] = {'count': 0, 'key': True}
+        return '', 200
+    return 'Invalid key', 403
+
+# Run the app
+if __name__ == '__main__':
+    app.run(debug=False)

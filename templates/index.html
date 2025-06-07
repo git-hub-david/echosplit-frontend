@@ -9,41 +9,49 @@
   <div class="container">
     <img id="logo" src="{{ url_for('static', filename='logo.png') }}" alt="EchoSplit" />
 
-    <!-- 1) UPLOAD STAGE -->
+    <!-- 1. Upload Section -->
     <div id="stage-upload">
       <h1>🎧 EchoSplit</h1>
+
       <form id="upload-form">
         <input type="file" name="file" required />
         <button type="submit">Upload & Separate</button>
       </form>
+
+      <p id="limit-msg" class="hidden">
+        🚫 You've used your 2 free splits.<br />
+        Enter a key or <a href="https://yourshopifykeypage.com" target="_blank">Buy a Key</a>
+      </p>
+
+      <form id="key-form" class="hidden">
+        <input type="text" name="key" placeholder="Enter your key" required />
+        <button type="submit">Submit Key</button>
+      </form>
     </div>
 
-    <!-- 2) PROCESSING STAGE -->
+    <!-- 2. Processing Stage -->
     <div id="stage-processing" class="hidden">
       <div class="loader"></div>
       <h2><strong>Processing…</strong></h2>
       <p>May take 1–2 minutes depending on file size</p>
     </div>
 
-    <!-- 3) RESULTS + FEEDBACK STAGE -->
+    <!-- 3. Results -->
     <div id="stage-results" class="hidden">
       <h2>🎶 Separated Stems</h2>
       <ul id="stem-list"></ul>
-
-      <h3>💬 Feedback</h3>
-      <form id="feedback-form" action="/feedback" method="POST">
-        <textarea name="message" placeholder="Let us know what you think..." required></textarea>
-        <button type="submit">Send Feedback</button>
-      </form>
     </div>
   </div>
 
   <script>
-    const uploadForm      = document.getElementById('upload-form');
-    const stageUpload     = document.getElementById('stage-upload');
+    const uploadForm = document.getElementById('upload-form');
+    const keyForm = document.getElementById('key-form');
+    const stageUpload = document.getElementById('stage-upload');
     const stageProcessing = document.getElementById('stage-processing');
-    const stageResults    = document.getElementById('stage-results');
-    const stemList        = document.getElementById('stem-list');
+    const stageResults = document.getElementById('stage-results');
+    const limitMsg = document.getElementById('limit-msg');
+    const stemList = document.getElementById('stem-list');
+    const bucket = "{{ bucket_name }}";
 
     uploadForm.addEventListener('submit', e => {
       e.preventDefault();
@@ -55,26 +63,50 @@
       formData.append('file', file);
 
       fetch('/', { method: 'POST', body: formData })
-        .then(async res => {
-          if (!res.ok) {
-            let errObj = {};
-            try { errObj = await res.json(); } catch {}
-            throw new Error(errObj.error || res.statusText);
-          }
-          // parse the returned JSON { filename: "safe_name.mp3" }
-          const data = await res.json();
-          return data.filename;
+        .then(res => {
+          if (!res.ok) throw new Error('Upload failed');
+          return res.json();
         })
-        .then(storedFilename => pollResults(storedFilename))
+        .then(json => {
+          if (json.blocked) {
+            stageProcessing.classList.add('hidden');
+            stageUpload.classList.remove('hidden');
+            limitMsg.classList.remove('hidden');
+            keyForm.classList.remove('hidden');
+          } else {
+            pollResults(file.name);
+          }
+        })
         .catch(err => {
-          alert("Error: " + err.message);
+          alert(err.message);
           stageProcessing.classList.add('hidden');
           stageUpload.classList.remove('hidden');
         });
     });
 
+    keyForm.addEventListener('submit', e => {
+      e.preventDefault();
+      const key = keyForm.querySelector('input[name="key"]').value;
+      fetch('/use_key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: key })
+      }).then(res => {
+        if (res.ok) {
+          alert('Key accepted. You may now upload again.');
+          limitMsg.classList.add('hidden');
+          keyForm.classList.add('hidden');
+        } else {
+          alert('Invalid key.');
+        }
+      });
+    });
+
     function pollResults(filename) {
-      let attempts = 0, maxAttempts = 30;
+      const base = filename.replace(/\.[^/.]+$/, '');
+      let attempts = 0;
+      const maxAttempts = 30;
+
       const interval = setInterval(() => {
         attempts++;
         fetch(`/status?filename=${encodeURIComponent(filename)}`)
@@ -82,7 +114,7 @@
           .then(json => {
             if (json.done) {
               clearInterval(interval);
-              showResultsWithUrls(json.urls);
+              showResults(json.urls);
             } else if (attempts >= maxAttempts) {
               clearInterval(interval);
               alert('Still processing—please refresh in a moment.');
@@ -101,20 +133,16 @@
       }, 4000);
     }
 
-    function showResultsWithUrls(urls) {
-      stemList.innerHTML = '';
-      for (const [stem, url] of Object.entries(urls)) {
-        const li = document.createElement('li');
-        const a  = document.createElement('a');
-        a.href        = url;
-        a.textContent = stem.charAt(0).toUpperCase() + stem.slice(1);
-        a.download    = `${stem}.mp3`;
-        li.appendChild(a);
-        stemList.appendChild(li);
-      }
-      stageProcessing.classList.add('hidden');
-      stageResults.classList.remove('hidden');
-    }
-  </script>
-</body>
-</html>
+function showResults(urls) {
+  ['vocals', 'drums', 'bass', 'other'].forEach(stem => {
+    const li = document.createElement('li');
+    const a = document.createElement('a');
+    a.href = urls[stem];
+    a.textContent = stem.charAt(0).toUpperCase() + stem.slice(1);
+    a.download = ''; // 🔽 THIS ensures it downloads
+    li.appendChild(a);
+    stemList.appendChild(li);
+  });
+  stageProcessing.classList.add('hidden');
+  stageResults.classList.remove('hidden');
+}
