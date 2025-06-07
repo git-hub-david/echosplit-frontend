@@ -51,3 +51,8 @@ button:hover {
 #stem-list li { margin: 8px 0; }
 #stem-list a { color: #00aaff; text-decoration: none; }
 #stem-list a:hover { text-decoration: underline; }
+#logo {
+  width: 120px;
+  margin: 0 auto 20px;
+  display: block;
+}
