@@ -67,3 +67,24 @@ def feedback():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
+@app.route("/status")
+def status():
+    """
+    Check whether the Demucs stems have been uploaded to S3.
+    Returns JSON { done: true } once `vocals.mp3` exists.
+    """
+    filename = request.args.get("filename", "")
+    if not filename:
+        return jsonify({"error": "No filename provided"}), 400
+
+    base = filename.rsplit(".", 1)[0]
+    key = f"{base}/vocals.mp3"
+    try:
+        s3.head_object(Bucket=bucket_name, Key=key)
+        return jsonify({"done": True})
+    except s3.exceptions.NoSuchKey:
+        return jsonify({"done": False})
+    except Exception as e:
+        # Any other error we treat as not done
+        return jsonify({"done": False}), 500

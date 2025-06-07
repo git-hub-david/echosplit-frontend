@@ -40,16 +40,13 @@
 
   <script>
     const uploadForm = document.getElementById('upload-form');
-    const feedbackForm = document.getElementById('feedback-form');
     const stageUpload = document.getElementById('stage-upload');
     const stageProcessing = document.getElementById('stage-processing');
     const stageResults = document.getElementById('stage-results');
     const stemList = document.getElementById('stem-list');
-    const bucket = "{{ bucket_name }}";
 
     uploadForm.addEventListener('submit', e => {
       e.preventDefault();
-      // Move to processing stage
       stageUpload.classList.add('hidden');
       stageProcessing.classList.remove('hidden');
 
@@ -60,9 +57,9 @@
       fetch('/', { method: 'POST', body: formData })
         .then(res => {
           if (!res.ok) throw new Error('Upload failed');
-          // start polling for results
-          pollResults(file.name);
+          return res.text();
         })
+        .then(() => pollResults(file.name))
         .catch(err => {
           alert(err.message);
           stageProcessing.classList.add('hidden');
@@ -76,9 +73,11 @@
       const maxAttempts = 30;
       const interval = setInterval(() => {
         attempts++;
-        fetch(`https://${bucket}.s3.amazonaws.com/${base}/vocals.mp3`, { method: 'HEAD' })
-          .then(res => {
-            if (res.ok) {
+        // Poll your backend status endpoint
+        fetch(`/status?filename=${encodeURIComponent(filename)}`)
+          .then(res => res.json())
+          .then(json => {
+            if (json.done) {
               clearInterval(interval);
               showResults(base);
             } else if (attempts >= maxAttempts) {
@@ -103,7 +102,7 @@
       ['vocals','drums','bass','other'].forEach(stem => {
         const li = document.createElement('li');
         const a = document.createElement('a');
-        a.href = `https://${bucket}.s3.amazonaws.com/${base}/${stem}.mp3`;
+        a.href = `https://${{bucket_name}}.s3.amazonaws.com/${base}/${stem}.mp3`;
         a.textContent = stem.charAt(0).toUpperCase() + stem.slice(1);
         a.target = '_blank';
         li.appendChild(a);
