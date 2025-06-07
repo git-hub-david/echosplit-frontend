@@ -70,21 +70,14 @@ if __name__ == "__main__":
 
 @app.route("/status")
 def status():
-    """
-    Check whether the Demucs stems have been uploaded to S3.
-    Returns JSON { done: true } once `vocals.mp3` exists.
-    """
+    # Forward the request to your RunPod backend
     filename = request.args.get("filename", "")
     if not filename:
-        return jsonify({"error": "No filename provided"}), 400
+        return jsonify({"error":"No filename"}), 400
 
-    base = filename.rsplit(".", 1)[0]
-    key = f"{base}/vocals.mp3"
+    backend_url = os.getenv("RUNPOD_WEBHOOK") + "/status"
     try:
-        s3.head_object(Bucket=bucket_name, Key=key)
-        return jsonify({"done": True})
-    except s3.exceptions.NoSuchKey:
-        return jsonify({"done": False})
+        resp = requests.get(backend_url, params={"filename": filename}, timeout=5)
+        return (resp.text, resp.status_code, {"Content-Type": "application/json"})
     except Exception as e:
-        # Any other error we treat as not done
         return jsonify({"done": False}), 500
