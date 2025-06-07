@@ -70,14 +70,20 @@ if __name__ == "__main__":
 
 @app.route("/status")
 def status_proxy():
+    """
+    Proxy status checks to your RunPod backend /status endpoint.
+    Frontend JS polls this route to know when stems are ready.
+    """
     filename = request.args.get("filename", "")
     if not filename:
         return jsonify({"error": "No filename provided"}), 400
 
-    # Forward to your RunPod backend
-    backend_url = os.getenv("RUNPOD_WEBHOOK") + "/status"
+    # Construct the backend status URL
+    backend_status_url = os.getenv("RUNPOD_WEBHOOK").rstrip("/") + "/status"
     try:
-        resp = requests.get(backend_url, params={"filename": filename}, timeout=5)
+        # Forward the call, passing along the filename
+        resp = requests.get(backend_status_url, params={"filename": filename}, timeout=5)
         return (resp.text, resp.status_code, {"Content-Type": "application/json"})
-    except Exception:
+    except Exception as e:
+        # On error, signal "not done" so polling continues
         return jsonify({"done": False}), 500
