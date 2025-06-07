@@ -1,20 +1,18 @@
-from flask import Flask, request, render_template
 import os
-import boto3
-import requests
-from dotenv import load_dotenv
+from flask import Flask, request, render_template, jsonify
 from werkzeug.utils import secure_filename
+from dotenv import load_dotenv
+import boto3
 
-# Load environment variables (keys, bucket names, etc.)
+# Load local .env when testing locally
 load_dotenv()
 
-# === Flask Setup ===
-UPLOAD_FOLDER = "uploads"
 app = Flask(__name__)
-app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config["UPLOAD_FOLDER"] = "uploads"
+os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
 
-# === AWS S3 Setup ===
+# AWS S3 setup
+bucket_name = os.getenv("S3_BUCKET")
 s3 = boto3.client(
     "s3",
     aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
@@ -22,49 +20,39 @@ s3 = boto3.client(
     region_name=os.getenv("AWS_REGION")
 )
 
-bucket_name = os.getenv("S3_BUCKET")
-runpod_webhook = os.getenv("RUNPOD_WEBHOOK")  # e.g., https://api.runpod.ai/v2/<endpoint>/run
-
-# === Upload Route ===
 @app.route("/", methods=["GET", "POST"])
 def upload_file():
     if request.method == "POST":
-        file = request.files.get("file")  # safer with .get() in case no file is sent
+        # JS sends FormData with 'file'
+        file = request.files.get("file")
         if not file:
-            return "No file uploaded", 400
-        
-        filename = secure_filename(file.filename)  # sanitize filename
-        filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-        file.save(filepath)
+            return jsonify({"error": "No file provided"}), 400
 
-        # === Upload to S3 ===
+        filename = secure_filename(file.filename)
+        local_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+        file.save(local_path)
+
         try:
-            s3.upload_file(filepath, bucket_name, filename)
+            # Upload to S3
+            s3.upload_file(local_path, bucket_name, filename)
+            print(f"✅ Uploaded {filename} to S3://{bucket_name}/{filename}")
+            return ("", 200)
         except Exception as e:
-            return f"S3 upload failed: {e}", 500
+            print(f"❌ S3 upload error: {e}")
+            return jsonify({"error": str(e)}), 500
 
-        # === Trigger RunPod Processing ===
-        try:
-            response = requests.post(runpod_webhook, json={"filename": filename})
-            if response.status_code != 200:
-                return f"RunPod processing error: {response.text}", 500
-        except Exception as e:
-            return f"Failed to reach RunPod: {e}", 500
+    # GET → serve the page, giving it the bucket name for JS
+    return render_template("index.html", bucket_name=bucket_name)
 
-        return render_template("index.html", stems="processing", song=filename)
-
-    # === GET Route for Page Load ===
-    return render_template("index.html", stems=None)
-
-# === Optional Feedback Form Handler ===
 @app.route("/feedback", methods=["POST"])
 def feedback():
-    msg = request.form["message"]
-    with open("feedback.txt", "a", encoding="utf-8") as f:
-        f.write(msg + "\n---\n")
-    return "✅ Thanks for your feedback!"
+    msg = request.form.get("message", "").strip()
+    if msg:
+        with open("feedback.txt", "a", encoding="utf-8") as f:
+            f.write(msg + "\n---\n")
+    return ("", 200)
 
-# === Start App ===
 if __name__ == "__main__":
+    # Use the PORT env var on Render, default to 5000 locally
     port = int(os.environ.get("PORT", 5000))
-    app.run(debug=False, host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port)

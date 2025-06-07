@@ -1,44 +1,116 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="UTF-8" />
   <title>EchoSplit</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
 </head>
 <body>
   <div class="container">
-    <h1>🎧 EchoSplit</h1>
+    <img id="logo" src="{{ url_for('static', filename='logo.png') }}" alt="EchoSplit" />
 
-    <form method="POST" enctype="multipart/form-data" onsubmit="showLoading()">
-      <input type="file" name="file" required>
-      <button type="submit">Upload & Separate</button>
-    </form>
-
-    <div id="loading" class="hidden">
-      <p>⏳ Separating your track... Please wait.</p>
+    <!-- 1) UPLOAD STAGE -->
+    <div id="stage-upload">
+      <h1>🎧 EchoSplit</h1>
+      <form id="upload-form">
+        <input type="file" name="file" required />
+        <button type="submit">Upload & Separate</button>
+      </form>
     </div>
 
-    {% if stems == 'processing' %}
-      <p class="status">Processing {{ song }}... Check back soon!</p>
-    {% elif stems %}
-      <h2>🎶 Separated Stems:</h2>
-      <ul>
-        {% for stem in ["vocals", "drums", "bass", "other"] %}
-          <li><a href="https://{{ bucket_name }}.s3.amazonaws.com/{{ song }}/{{ stem }}.mp3">{{ stem.title() }}</a></li>
-        {% endfor %}
-      </ul>
-    {% endif %}
+    <!-- 2) PROCESSING STAGE -->
+    <div id="stage-processing" class="hidden">
+      <div class="loader"></div>
+      <h2><strong>Processing…</strong></h2>
+      <p>May take 1–2 minutes depending on file size</p>
+    </div>
 
-    <h3>💬 Feedback</h3>
-    <form action="/feedback" method="POST">
-      <textarea name="message" placeholder="Let us know what you think..." required></textarea>
-      <button type="submit">Send Feedback</button>
-    </form>
+    <!-- 3) RESULTS + FEEDBACK STAGE -->
+    <div id="stage-results" class="hidden">
+      <h2>🎶 Separated Stems</h2>
+      <ul id="stem-list"></ul>
+
+      <h3>💬 Feedback</h3>
+      <form id="feedback-form" action="/feedback" method="POST">
+        <textarea name="message" placeholder="Let us know what you think..." required></textarea>
+        <button type="submit">Send Feedback</button>
+      </form>
+    </div>
   </div>
 
   <script>
-    function showLoading() {
-      document.getElementById("loading").classList.remove("hidden");
+    const uploadForm = document.getElementById('upload-form');
+    const feedbackForm = document.getElementById('feedback-form');
+    const stageUpload = document.getElementById('stage-upload');
+    const stageProcessing = document.getElementById('stage-processing');
+    const stageResults = document.getElementById('stage-results');
+    const stemList = document.getElementById('stem-list');
+    const bucket = "{{ bucket_name }}";
+
+    uploadForm.addEventListener('submit', e => {
+      e.preventDefault();
+      // Move to processing stage
+      stageUpload.classList.add('hidden');
+      stageProcessing.classList.remove('hidden');
+
+      const file = uploadForm.querySelector('input[name="file"]').files[0];
+      const formData = new FormData();
+      formData.append('file', file);
+
+      fetch('/', { method: 'POST', body: formData })
+        .then(res => {
+          if (!res.ok) throw new Error('Upload failed');
+          // start polling for results
+          pollResults(file.name);
+        })
+        .catch(err => {
+          alert(err.message);
+          stageProcessing.classList.add('hidden');
+          stageUpload.classList.remove('hidden');
+        });
+    });
+
+    function pollResults(filename) {
+      const base = filename.replace(/\.[^/.]+$/, '');
+      let attempts = 0;
+      const maxAttempts = 30;
+      const interval = setInterval(() => {
+        attempts++;
+        fetch(`https://${bucket}.s3.amazonaws.com/${base}/vocals.mp3`, { method: 'HEAD' })
+          .then(res => {
+            if (res.ok) {
+              clearInterval(interval);
+              showResults(base);
+            } else if (attempts >= maxAttempts) {
+              clearInterval(interval);
+              alert('Still processing—please refresh in a moment.');
+              stageProcessing.classList.add('hidden');
+              stageUpload.classList.remove('hidden');
+            }
+          })
+          .catch(() => {
+            if (attempts >= maxAttempts) {
+              clearInterval(interval);
+              alert('Error checking status.');
+              stageProcessing.classList.add('hidden');
+              stageUpload.classList.remove('hidden');
+            }
+          });
+      }, 4000);
+    }
+
+    function showResults(base) {
+      ['vocals','drums','bass','other'].forEach(stem => {
+        const li = document.createElement('li');
+        const a = document.createElement('a');
+        a.href = `https://${bucket}.s3.amazonaws.com/${base}/${stem}.mp3`;
+        a.textContent = stem.charAt(0).toUpperCase() + stem.slice(1);
+        a.target = '_blank';
+        li.appendChild(a);
+        stemList.appendChild(li);
+      });
+      stageProcessing.classList.add('hidden');
+      stageResults.classList.remove('hidden');
     }
   </script>
 </body>
