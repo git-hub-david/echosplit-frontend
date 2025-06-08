@@ -139,10 +139,13 @@ function showResults(urls) {
     const a = document.createElement('a');
     a.href = urls[stem];
     a.textContent = stem.charAt(0).toUpperCase() + stem.slice(1);
-    a.download = ''; // 🔽 THIS ensures it downloads
+    a.download = ""; // 🔽 THIS ensures it downloads
     li.appendChild(a);
     stemList.appendChild(li);
   });
   stageProcessing.classList.add('hidden');
   stageResults.classList.remove('hidden');
 }
+</script>
+</body>
+</html>
