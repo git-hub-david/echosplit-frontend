@@ -1,126 +1,109 @@
 import os
+import uuid
 import json
 import boto3
-from flask import Flask, request, jsonify, render_template
-from werkzeug.utils import secure_filename
-from flask_cors import CORS
+import requests
+from flask import (
+    Flask, render_template, request,
+    redirect, url_for, flash, jsonify
+)
+from session_tracker import SessionTracker
 
-# === App Configuration ===
+# ─── App Setup ────────────────────────────────────────────────────────────────
 app = Flask(__name__)
-CORS(app)
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "CHANGE_ME")
 
-UPLOAD_FOLDER = 'uploads'
-RESULTS_FOLDER = 'separated'      # not used directly here, stems live on S3
-KEY_FILE = 'keys.json'
-BUCKET_NAME = 'echosplit-uploads' # your S3 bucket
+# S3 client
+s3 = boto3.client(
+    "s3",
+    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+    region_name=os.getenv("AWS_REGION"),
+)
+BUCKET = os.getenv("S3_BUCKET")
 
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+# Tracker for key-based limits
+tracker = SessionTracker("keys.json")
 
-# === In-memory session tracking (by IP) ===
-user_sessions = {}
+# RunPod webhook URL
+RUNPOD_WEBHOOK = os.getenv("RUNPOD_WEBHOOK_URL")
 
-# === Utilities ===
 
-def load_keys():
-    """Load the list of valid reusable keys from JSON."""
-    if os.path.exists(KEY_FILE):
-        with open(KEY_FILE, 'r') as f:
-            return json.load(f)
-    return []
-
-def check_s3_files_exist(bucket, base_filename):
-    """
-    Check S3 for each stem. Return (all_exist: bool, urls: dict).
-    """
-    s3 = boto3.client(
-        's3',
-        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-        region_name=os.getenv("AWS_REGION")
-    )
-    stems = ['vocals', 'drums', 'bass', 'other']
-    urls = {}
-    for stem in stems:
-        key = f"{base_filename}/{stem}.mp3"
-        try:
-            s3.head_object(Bucket=bucket, Key=key)
-            urls[stem] = f"https://{bucket}.s3.amazonaws.com/{base_filename}/{stem}.mp3"
-        except s3.exceptions.ClientError:
-            return False, {}
-    return True, urls
-
-# === Routes ===
-
-@app.route('/')
+# ─── Routes ──────────────────────────────────────────────────────────────────
+@app.route("/", methods=["GET", "POST"])
 def index():
-    """Render the main upload page."""
-    return render_template('index.html', bucket_name=BUCKET_NAME)
+    if request.method == "POST":
+        user_key = request.form.get("api_key", "").strip()
+        if not tracker.validate(user_key):
+            flash("Invalid or expired key.", "error")
+            return redirect(url_for("index"))
 
-@app.route('/', methods=['POST'])
-def upload_file():
-    """Handle file uploads, enforce free-usage limit or key unlock."""
-    ip = request.remote_addr
-    user = user_sessions.get(ip, {'count': 0, 'key': False})
+        f = request.files.get("file")
+        if not f:
+            flash("No file selected.", "error")
+            return redirect(url_for("index"))
 
-    # If no key and already used 2 uploads, block
-    if not user['key'] and user['count'] >= 2:
-        return jsonify({'blocked': True}), 200
+        # ensure upload folder exists
+        os.makedirs("uploads", exist_ok=True)
 
-    # Validate incoming file
-    if 'file' not in request.files or request.files['file'].filename == '':
-        return 'No file uploaded', 400
+        # secure, unique filename
+        filename = f"{uuid.uuid4().hex}_{f.filename}"
+        local_path = os.path.join("uploads", filename)
+        f.save(local_path)
 
-    file = request.files['file']
-    filename = secure_filename(file.filename)
-    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-    file.save(filepath)
+        # 1) upload to S3
+        try:
+            s3.upload_file(local_path, BUCKET, filename)
+        except Exception as e:
+            flash(f"S3 upload failed: {e}", "error")
+            return redirect(url_for("index"))
 
-    # TODO: Trigger your RunPod processing here, e.g. via requests.post(...)
-    print(f"[INFO] Upload received: {filename} (IP: {ip})")
+        # 2) trigger RunPod
+        resp = requests.post(RUNPOD_WEBHOOK, json={
+            "bucket": BUCKET,
+            "filename": filename
+        })
+        if not resp.ok:
+            flash("Failed to trigger processing.", "error")
+            return redirect(url_for("index"))
 
-    # Increment upload count
-    user['count'] += 1
-    user_sessions[ip] = user
+        flash("Upload successful! Processing started.", "success")
+        return redirect(url_for("status", file=filename))
 
-    return jsonify({'blocked': False}), 200
+    return render_template("index.html")
 
-@app.route('/status')
+
+@app.route("/status")
 def status():
     """
-    Polling endpoint: checks S3 for separated stems.
-    Returns {"done":true,"urls":{...}} or {"done":false}.
+    Poll this endpoint with ?file=<filename>.
+    Returns JSON: { status: "pending"|"done"|"error", files: {...} }
     """
-    filename = request.args.get('filename')
+    filename = request.args.get("file")
     if not filename:
-        return jsonify({'error': 'Filename required'}), 400
+        return jsonify({"error": "file param required"}), 400
 
-    base = os.path.splitext(filename)[0]
-    exists, urls = check_s3_files_exist(BUCKET_NAME, base)
-    if exists:
-        return jsonify({'done': True, 'urls': urls})
-    else:
-        return jsonify({'done': False})
+    # check for results in S3 under "separated/"
+    key = f"separated/{filename}"
+    try:
+        s3.head_object(Bucket=BUCKET, Key=key)
+        # if found, list both stems
+        base = filename.rsplit(".", 1)[0]
+        return jsonify({
+            "status": "done",
+            "files": {
+                "vocals": f"{base}/vocals.wav",
+                "instrumental": f"{base}/no_vocals.wav"
+            }
+        })
+    except s3.exceptions.NoSuchKey:
+        # still processing
+        return jsonify({"status": "pending"}), 202
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
 
-@app.route('/use_key', methods=['POST'])
-def use_key():
-    """
-    Accept a reusable key to reset the user's count and unlock unlimited use.
-    """
-    data = request.get_json() or {}
-    key = data.get('key', '').strip()
-    ip = request.remote_addr
 
-    valid_keys = load_keys()
-    if key in valid_keys:
-        # Reset their count and mark key-active
-        user_sessions[ip] = {'count': 0, 'key': True}
-        print(f"[KEY] {ip} unlocked with key: {key}")
-        return '', 200
-
-    return 'Invalid key', 403
-
-# === Entry Point ===
-if __name__ == '__main__':
-    # Bind to 0.0.0.0:5000 for Render
-    app.run(host='0.0.0.0', port=5000)
+# ─── Run ─────────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    # Render automatically picks this up
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
