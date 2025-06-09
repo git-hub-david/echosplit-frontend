@@ -10,6 +10,14 @@ from flask import (
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
 
+# ─── Critical config ─────────────────────────────────────────────────────────
+RUNPOD_WEBHOOK = os.getenv("RUNPOD_WEBHOOK_URL")
+if not RUNPOD_WEBHOOK:
+    logging.critical("❌ RUNPOD_WEBHOOK_URL is not set! Aborting startup.")
+    raise RuntimeError("RUNPOD_WEBHOOK_URL environment variable is missing")
+
+logging.info(f"✅ Using RunPod webhook: {RUNPOD_WEBHOOK}")
+
 # ─── App Setup ────────────────────────────────────────────────────────────────
 app = Flask(__name__)
 CORS(app)
