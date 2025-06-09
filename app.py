@@ -16,7 +16,6 @@ RUNPOD_WEBHOOK = os.getenv("RUNPOD_WEBHOOK_URL")
 if not RUNPOD_WEBHOOK:
     logging.critical("❌ RUNPOD_WEBHOOK_URL is not set! Aborting startup.")
     raise RuntimeError("RUNPOD_WEBHOOK_URL environment variable is missing")
-
 logging.info(f"✅ Using RunPod webhook: {RUNPOD_WEBHOOK}")
 
 # ─── App Setup ────────────────────────────────────────────────────────────────
@@ -33,19 +32,15 @@ s3 = boto3.client(
 )
 BUCKET = os.getenv("S3_BUCKET")
 
-# RunPod webhook
-RUNPOD_WEBHOOK = os.getenv("RUNPOD_WEBHOOK_URL")
-
 # In-memory tracking of free uses per IP
-user_sessions = {}  # { ip: { "count": int, "key_unlocked": bool } }
+user_sessions = {}
 
 # Load valid keys
 KEY_FILE = "keys.json"
 valid_keys = set()
 if os.path.exists(KEY_FILE):
     try:
-        with open(KEY_FILE) as f:
-            valid_keys = set(json.load(f))
+        valid_keys = set(json.load(open(KEY_FILE)))
     except:
         valid_keys = set()
 
@@ -54,45 +49,44 @@ if os.path.exists(KEY_FILE):
 def index():
     if request.method == "POST":
         ip = request.headers.get("X-Forwarded-For", request.remote_addr)
-        # init session record if needed
         user = user_sessions.setdefault(ip, {"count": 0, "key_unlocked": False})
 
-        # did they submit a key?
         key = (request.form.get("api_key") or "").strip()
         if key and key in valid_keys:
             user["key_unlocked"] = True
-            user["count"] = 0  # reset free count
-        # enforce free-use limit
+            user["count"] = 0
+
         if not user["key_unlocked"] and user["count"] >= 4:
             return jsonify({"blocked": True}), 200
 
-        # consume a free use (if no key)
         if not user["key_unlocked"]:
             user["count"] += 1
 
-        # handle file upload
         f = request.files.get("file")
         if not f:
             return jsonify({"error": "No file uploaded"}), 400
 
-        # save locally
         os.makedirs("uploads", exist_ok=True)
         filename = f"{uuid.uuid4().hex}_{secure_filename(f.filename)}"
         path = os.path.join("uploads", filename)
         f.save(path)
 
-        # upload original to S3
         s3.upload_file(path, BUCKET, filename)
 
-        # trigger RunPod
-        resp = requests.post(RUNPOD_WEBHOOK, json={
-            "filename": filename,
-            "bucket": BUCKET
-        })
-        if not resp.ok:
-            return jsonify({"error": "Failed to trigger processing"}), 500
+        # ─── DEBUG: POST to RunPod with logging ──────────────────────
+        payload = {"filename": filename, "bucket": BUCKET}
+        logging.info(f"▶️  About to POST to RunPod at: {RUNPOD_WEBHOOK}")
+        logging.info(f"Payload: {payload!r}")
 
-        # return filename so the frontend can poll /status
+        try:
+            resp = requests.post(RUNPOD_WEBHOOK, json=payload, timeout=10)
+            logging.info(f"💡 RunPod response status: {resp.status_code}, body: {resp.text}")
+            resp.raise_for_status()
+        except Exception as e:
+            logging.error("❌ Exception while triggering RunPod", exc_info=e)
+            return jsonify({"error": f"RunPod trigger error: {e}"}), 500
+        # ───────────────────────────────────────────────────────────────
+
         return jsonify({"filename": filename}), 200
 
     return render_template("index.html")
@@ -100,13 +94,6 @@ def index():
 
 @app.route("/status")
 def status():
-    """
-    Usage: GET /status?file=<filename>
-    Returns JSON:
-      { status: "pending" }
-      { status: "done", files: { vocals: url, drums: url, ... } }
-      { status: "error", error: msg }
-    """
     filename = request.args.get("file")
     if not filename:
         return jsonify({"error": "file param required"}), 400
@@ -128,4 +115,6 @@ def status():
 
 # ─── Run ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
+    port = int(os.getenv("PORT", 5000))
+    logging.info(f"Starting EchoSplit on port {port}")
+    app.run(host="0.0.0.0", port=port)
