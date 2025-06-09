@@ -7,81 +7,86 @@
 </head>
 <body>
   <div class="container">
-    <img src="{{ url_for('static', filename='logo.png') }}" class="logo" alt="Logo"/>
+    <img src="{{ url_for('static', filename='logo.png') }}" class="logo" alt="EchoSplit Logo"/>
     <h1>EchoSplit</h1>
 
-    {% with messages = get_flashed_messages(with_categories=true) %}
-      {% if messages %}
-        <ul class="flashes">
-          {% for category, msg in messages %}
-            <li class="{{ category }}">{{ msg }}</li>
-          {% endfor %}
-        </ul>
-      {% endif %}
-    {% endwith %}
-
     <form id="upload-form" method="post" enctype="multipart/form-data">
-      <label for="api_key">API Key:</label>
-      <input type="text" id="api_key" name="api_key" required/>
+      <label for="api_key">API Key (optional):</label>
+      <input type="text" id="api_key" name="api_key"/>
 
-      <label for="file">Audio File:</label>
+      <label for="file">Select audio file:</label>
       <input type="file" id="file" name="file" accept="audio/*" required/>
 
       <button type="submit">Upload &amp; Split</button>
     </form>
 
-    <div id="status-section" style="display:none;">
-      <h2>Processing status:</h2>
+    <p id="limit-msg" class="hidden">
+      🚫 You already did 4 stem consolidations.<br/>
+      Enter a key or
+      <a href="https://yourshopifykeypage.com" target="_blank">Buy a Key</a>
+    </p>
+
+    <div id="status-section" class="hidden">
+      <h2>Processing Status</h2>
       <p id="status-text">Pending…</p>
-      <div id="download-links" style="display:none;">
-        <a id="vocals-link" href="#">Download Vocals</a>
-        <a id="instr-link" href="#">Download Instrumental</a>
+      <div id="download-links" class="hidden">
+        <p>Download your stems:</p>
+        <ul>
+          <li><a id="vocals-link" href="#">Vocals</a></li>
+          <li><a id="drums-link" href="#">Drums</a></li>
+          <li><a id="bass-link" href="#">Bass</a></li>
+          <li><a id="other-link" href="#">Other</a></li>
+        </ul>
       </div>
     </div>
   </div>
 
   <script>
     const form = document.getElementById("upload-form");
-    form.addEventListener("submit", e => {
+    const limitMsg = document.getElementById("limit-msg");
+    const statusSection = document.getElementById("status-section");
+    const statusText = document.getElementById("status-text");
+    const downloadLinks = document.getElementById("download-links");
+
+    form.addEventListener("submit", async e => {
       e.preventDefault();
+      limitMsg.classList.add("hidden");
       const data = new FormData(form);
-      fetch("/", {
-        method: "POST",
-        body: data
-      })
-      .then(res => {
-        // on success, redirect to status view:
-        window.location = res.url;
-      })
-      .catch(err => alert("Upload failed: "+err));
+      const res = await fetch("/", { method: "POST", body: data });
+      const j = await res.json();
+
+      if (j.blocked) {
+        limitMsg.classList.remove("hidden");
+        return;
+      }
+      if (j.error) {
+        alert(j.error);
+        return;
+      }
+
+      // start polling
+      statusSection.classList.remove("hidden");
+      pollStatus(j.filename);
     });
 
-    // If we’re on ?file=<>, start polling
-    const params = new URLSearchParams(window.location.search);
-    if (params.has("file")) {
-      document.getElementById("status-section").style.display = "block";
-      const file = params.get("file");
-      const statusText = document.getElementById("status-text");
-      const poll = () => {
-        fetch(`/status?file=${encodeURIComponent(file)}`)
-          .then(r => r.json().then(j => [r.status, j]))
-          .then(([code, j]) => {
-            if (code === 200 && j.status === "done") {
-              statusText.textContent = "Done!";
-              document.getElementById("download-links").style.display = "block";
-              document.getElementById("vocals-link")
-                      .href = `https://${BUCKET}.s3.amazonaws.com/separated/${file.replace(/\..+$/,'')}/vocals.wav`;
-              document.getElementById("instr-link")
-                      .href = `https://${BUCKET}.s3.amazonaws.com/separated/${file.replace(/\..+$/,'')}/no_vocals.wav`;
-            } else if (code === 202) {
-              statusText.textContent = "Still processing…";
-              setTimeout(poll, 3000);
-            } else {
-              statusText.textContent = "Error: "+(j.error||"unknown");
-            }
-          });
-      };
-      poll();
+    function pollStatus(filename) {
+      fetch(`/status?file=${encodeURIComponent(filename)}`)
+        .then(r => r.json().then(j => [r.status, j]))
+        .then(([code, j]) => {
+          if (code === 200 && j.status === "done") {
+            statusText.textContent = "Done!";
+            downloadLinks.classList.remove("hidden");
+            document.getElementById("vocals-link").href = j.files.vocals;
+            document.getElementById("drums-link").href = j.files.drums;
+            document.getElementById("bass-link").href = j.files.bass;
+            document.getElementById("other-link").href = j.files.other;
+          } else if (code === 202) {
+            statusText.textContent = "Still processing…";
+            setTimeout(() => pollStatus(filename), 3000);
+          } else {
+            statusText.textContent = "Error: " + (j.error || "unknown");
+          }
+        });
     }
   </script>
 </body>

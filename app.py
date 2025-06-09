@@ -7,13 +7,15 @@ from flask import (
     Flask, render_template, request,
     redirect, url_for, flash, jsonify
 )
-from session_tracker import SessionTracker
+from werkzeug.utils import secure_filename
+from flask_cors import CORS
 
 # ─── App Setup ────────────────────────────────────────────────────────────────
 app = Flask(__name__)
+CORS(app)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "CHANGE_ME")
 
-# S3 client
+# AWS S3
 s3 = boto3.client(
     "s3",
     aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
@@ -22,53 +24,67 @@ s3 = boto3.client(
 )
 BUCKET = os.getenv("S3_BUCKET")
 
-# Tracker for key-based limits
-tracker = SessionTracker("keys.json")
-
-# RunPod webhook URL
+# RunPod webhook
 RUNPOD_WEBHOOK = os.getenv("RUNPOD_WEBHOOK_URL")
 
+# In-memory tracking of free uses per IP
+user_sessions = {}  # { ip: { "count": int, "key_unlocked": bool } }
+
+# Load valid keys
+KEY_FILE = "keys.json"
+valid_keys = set()
+if os.path.exists(KEY_FILE):
+    try:
+        with open(KEY_FILE) as f:
+            valid_keys = set(json.load(f))
+    except:
+        valid_keys = set()
 
 # ─── Routes ──────────────────────────────────────────────────────────────────
 @app.route("/", methods=["GET", "POST"])
 def index():
     if request.method == "POST":
-        user_key = request.form.get("api_key", "").strip()
-        if not tracker.validate(user_key):
-            flash("Invalid or expired key.", "error")
-            return redirect(url_for("index"))
+        ip = request.headers.get("X-Forwarded-For", request.remote_addr)
+        # init session record if needed
+        user = user_sessions.setdefault(ip, {"count": 0, "key_unlocked": False})
 
+        # did they submit a key?
+        key = (request.form.get("api_key") or "").strip()
+        if key and key in valid_keys:
+            user["key_unlocked"] = True
+            user["count"] = 0  # reset free count
+        # enforce free-use limit
+        if not user["key_unlocked"] and user["count"] >= 4:
+            return jsonify({"blocked": True}), 200
+
+        # consume a free use (if no key)
+        if not user["key_unlocked"]:
+            user["count"] += 1
+
+        # handle file upload
         f = request.files.get("file")
         if not f:
-            flash("No file selected.", "error")
-            return redirect(url_for("index"))
+            return jsonify({"error": "No file uploaded"}), 400
 
-        # ensure upload folder exists
+        # save locally
         os.makedirs("uploads", exist_ok=True)
+        filename = f"{uuid.uuid4().hex}_{secure_filename(f.filename)}"
+        path = os.path.join("uploads", filename)
+        f.save(path)
 
-        # secure, unique filename
-        filename = f"{uuid.uuid4().hex}_{f.filename}"
-        local_path = os.path.join("uploads", filename)
-        f.save(local_path)
+        # upload original to S3
+        s3.upload_file(path, BUCKET, filename)
 
-        # 1) upload to S3
-        try:
-            s3.upload_file(local_path, BUCKET, filename)
-        except Exception as e:
-            flash(f"S3 upload failed: {e}", "error")
-            return redirect(url_for("index"))
-
-        # 2) trigger RunPod
+        # trigger RunPod
         resp = requests.post(RUNPOD_WEBHOOK, json={
-            "bucket": BUCKET,
-            "filename": filename
+            "filename": filename,
+            "bucket": BUCKET
         })
         if not resp.ok:
-            flash("Failed to trigger processing.", "error")
-            return redirect(url_for("index"))
+            return jsonify({"error": "Failed to trigger processing"}), 500
 
-        flash("Upload successful! Processing started.", "success")
-        return redirect(url_for("status", file=filename))
+        # return filename so the frontend can poll /status
+        return jsonify({"filename": filename}), 200
 
     return render_template("index.html")
 
@@ -76,28 +92,26 @@ def index():
 @app.route("/status")
 def status():
     """
-    Poll this endpoint with ?file=<filename>.
-    Returns JSON: { status: "pending"|"done"|"error", files: {...} }
+    Usage: GET /status?file=<filename>
+    Returns JSON:
+      { status: "pending" }
+      { status: "done", files: { vocals: url, drums: url, ... } }
+      { status: "error", error: msg }
     """
     filename = request.args.get("file")
     if not filename:
         return jsonify({"error": "file param required"}), 400
 
-    # check for results in S3 under "separated/"
-    key = f"separated/{filename}"
+    base = filename.rsplit(".", 1)[0]
+    stems = ["vocals", "drums", "bass", "other"]
+    urls = {}
     try:
-        s3.head_object(Bucket=BUCKET, Key=key)
-        # if found, list both stems
-        base = filename.rsplit(".", 1)[0]
-        return jsonify({
-            "status": "done",
-            "files": {
-                "vocals": f"{base}/vocals.wav",
-                "instrumental": f"{base}/no_vocals.wav"
-            }
-        })
+        for stem in stems:
+            key = f"{base}/{stem}.mp3"
+            s3.head_object(Bucket=BUCKET, Key=key)
+            urls[stem] = f"https://{BUCKET}.s3.amazonaws.com/{key}"
+        return jsonify({"status": "done", "files": urls}), 200
     except s3.exceptions.NoSuchKey:
-        # still processing
         return jsonify({"status": "pending"}), 202
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)}), 500
@@ -105,5 +119,4 @@ def status():
 
 # ─── Run ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # Render automatically picks this up
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
