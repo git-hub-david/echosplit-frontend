@@ -1,5 +1,4 @@
 import os
-import logging
 import uuid
 import json
 import boto3
@@ -11,19 +10,23 @@ from flask import (
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
 
+# ─── PRINT-BASED DEBUGGING ─────────────────────────────────────────────────────
+def debug(*args, **kwargs):
+    print(*args, **kwargs, flush=True)
+
 # ─── Critical config ─────────────────────────────────────────────────────────
 RUNPOD_WEBHOOK = os.getenv("RUNPOD_WEBHOOK_URL")
 if not RUNPOD_WEBHOOK:
-    logging.critical("❌ RUNPOD_WEBHOOK_URL is not set! Aborting startup.")
+    debug("❌ RUNPOD_WEBHOOK_URL is not set! Aborting startup.")
     raise RuntimeError("RUNPOD_WEBHOOK_URL environment variable is missing")
-logging.info(f"✅ Using RunPod webhook: {RUNPOD_WEBHOOK}")
+debug("✅ Using RunPod webhook:", RUNPOD_WEBHOOK)
 
 # ─── App Setup ────────────────────────────────────────────────────────────────
 app = Flask(__name__)
 CORS(app)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "CHANGE_ME")
 
-# AWS S3
+# AWS S3 client
 s3 = boto3.client(
     "s3",
     aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
@@ -35,7 +38,7 @@ BUCKET = os.getenv("S3_BUCKET")
 # In-memory tracking of free uses per IP
 user_sessions = {}
 
-# Load valid keys
+# Load valid API keys
 KEY_FILE = "keys.json"
 valid_keys = set()
 if os.path.exists(KEY_FILE):
@@ -51,17 +54,20 @@ def index():
         ip = request.headers.get("X-Forwarded-For", request.remote_addr)
         user = user_sessions.setdefault(ip, {"count": 0, "key_unlocked": False})
 
+        # Handle API key submission
         key = (request.form.get("api_key") or "").strip()
         if key and key in valid_keys:
             user["key_unlocked"] = True
             user["count"] = 0
 
+        # Enforce 4 free splits
         if not user["key_unlocked"] and user["count"] >= 4:
             return jsonify({"blocked": True}), 200
 
         if not user["key_unlocked"]:
             user["count"] += 1
 
+        # Handle file upload
         f = request.files.get("file")
         if not f:
             return jsonify({"error": "No file uploaded"}), 400
@@ -71,19 +77,20 @@ def index():
         path = os.path.join("uploads", filename)
         f.save(path)
 
+        # Upload original to S3
         s3.upload_file(path, BUCKET, filename)
 
-        # ─── DEBUG: POST to RunPod with logging ──────────────────────
+        # ─── DEBUG: POST to RunPod with print() ───────────────────────
         payload = {"filename": filename, "bucket": BUCKET}
-        logging.info(f"▶️  About to POST to RunPod at: {RUNPOD_WEBHOOK}")
-        logging.info(f"Payload: {payload!r}")
+        debug("▶️  About to POST to RunPod at:", RUNPOD_WEBHOOK)
+        debug("   Payload:", payload)
 
         try:
             resp = requests.post(RUNPOD_WEBHOOK, json=payload, timeout=10)
-            logging.info(f"💡 RunPod response status: {resp.status_code}, body: {resp.text}")
+            debug("💡 RunPod response status:", resp.status_code, "body:", resp.text)
             resp.raise_for_status()
         except Exception as e:
-            logging.error("❌ Exception while triggering RunPod", exc_info=e)
+            debug("❌ Exception while triggering RunPod:", e)
             return jsonify({"error": f"RunPod trigger error: {e}"}), 500
         # ───────────────────────────────────────────────────────────────
 
@@ -116,5 +123,5 @@ def status():
 # ─── Run ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
-    logging.info(f"Starting EchoSplit on port {port}")
+    debug(f"🚀 Starting EchoSplit on port {port}")
     app.run(host="0.0.0.0", port=port)
